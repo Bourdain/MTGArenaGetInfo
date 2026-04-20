@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+daily_deals.db
+images/
+.vs/
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
