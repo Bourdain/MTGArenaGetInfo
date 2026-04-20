@@ -264,47 +264,79 @@ async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = date.today()
     scrape_date = latest.get("date_key", "")
 
-    # Telegram has a 4096 char message limit, so we may need to split
-    # Build the message with status-based formatting
-    lines = [
-        "🏆 <b>MTGA Ranked Events</b>",
-        f"📆 Data from: {scrape_date[:4]}-{scrape_date[4:6]}-{scrape_date[6:]}",
-        "",
-        "🟢 = Active  |  ⚪ = Upcoming  |  🔴 = Ended  |  ♾️ = Permanent",
-        "",
-    ]
+    # Categorize events into groups
+    groups = {
+        "🎮 Constructed Ranked": [],
+        "⭐ Premier Draft": [],
+        "✌️ Pick-Two Draft": [],
+        "⚡ Quick Draft": [],
+        "🎲 Other Events": [],
+    }
 
     for ev in events:
         status = events_scraper.get_event_status(ev["start"], ev["end"], today)
-        event_name = ev["event"]
-        fmt = ev["format"]
-        start = ev["start"]
-        end = ev["end"]
+        ev["_status"] = status
+        name = ev["event"]
 
-        # Format the date range
-        date_range = f"{start} → {end}"
+        if "Premier Draft" in name:
+            groups["⭐ Premier Draft"].append(ev)
+        elif "Pick-Two" in name:
+            groups["✌️ Pick-Two Draft"].append(ev)
+        elif "Quick Draft" in name:
+            groups["⚡ Quick Draft"].append(ev)
+        elif ev["start"] == "∞" and ev["end"] == "∞":
+            groups["🎮 Constructed Ranked"].append(ev)
+        else:
+            groups["🎲 Other Events"].append(ev)
 
-        if status == "permanent":
-            # Permanent events — plain text with infinity symbol
-            line = f"♾️ {event_name}\n    <i>{fmt}</i>"
-        elif status == "ended":
-            # Ended — strikethrough
-            line = f"🔴 <s>{event_name}</s>\n    <i>{fmt}</i> | {date_range}"
-        elif status == "active":
-            # Active — bold + green indicator
-            line = f"🟢 <b>{event_name}</b>\n    <i>{fmt}</i> | {date_range}"
-        else:  # upcoming
-            line = f"⚪ {event_name}\n    <i>{fmt}</i> | {date_range}"
+    # Build message
+    formatted_date = f"{scrape_date[:4]}-{scrape_date[4:6]}-{scrape_date[6:]}" if len(scrape_date) == 8 else scrape_date
+    lines = [
+        "🏆 <b>MTGA Ranked Events</b>",
+        f"📆 Updated: {formatted_date}",
+        "",
+        "🟢 Active  •  ⚪ Upcoming  •  🔴 Ended  •  ♾️ Always",
+    ]
 
-        lines.append(line)
+    for group_name, group_events in groups.items():
+        if not group_events:
+            continue
+
+        lines.append("")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"<b>{group_name}</b>")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+        for ev in group_events:
+            status = ev["_status"]
+            name = ev["event"]
+            fmt = ev["format"]
+            start = ev["start"]
+            end = ev["end"]
+
+            if status == "permanent":
+                lines.append(f"  ♾️ {name}")
+                lines.append(f"      <i>{fmt}</i>")
+            elif status == "ended":
+                lines.append(f"  🔴 <s>{name}</s>")
+                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+            elif status == "active":
+                lines.append(f"  🟢 <b>{name}</b>")
+                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+            else:  # upcoming
+                lines.append(f"  ⚪ {name}")
+                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+
+    lines.append("")
+    lines.append("🔗 <a href=\"https://magic.wizards.com/en/news/mtg-arena/ranked-season\">Full details on Wizards</a>")
 
     message = "\n".join(lines)
 
     # Telegram limit is 4096 chars — split if needed
     if len(message) <= 4096:
-        await update.message.reply_text(message, parse_mode="HTML")
+        await update.message.reply_text(message, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        # Split into chunks at line boundaries
+        # Split into chunks at section boundaries
         chunks = []
         current = ""
         for line in lines:
@@ -317,7 +349,7 @@ async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chunks.append(current)
 
         for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode="HTML")
+            await update.message.reply_text(chunk, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
