@@ -34,6 +34,12 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            chat_id INTEGER PRIMARY KEY,
+            subscribed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -121,6 +127,49 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         except (json.JSONDecodeError, TypeError):
             d["table_data"] = None
     return d
+
+
+def subscribe_chat(chat_id: int) -> bool:
+    """Subscribe a chat to automatic deal notifications. Returns True if newly subscribed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT OR IGNORE INTO subscriptions (chat_id) VALUES (?)", (chat_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def unsubscribe_chat(chat_id: int) -> bool:
+    """Unsubscribe a chat from notifications. Returns True if was subscribed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM subscriptions WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    removed = cursor.rowcount > 0
+    conn.close()
+    return removed
+
+
+def is_subscribed(chat_id: int) -> bool:
+    """Check if a chat is subscribed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM subscriptions WHERE chat_id = ?", (chat_id,))
+    exists = cursor.fetchone() is not None
+    conn.close()
+    return exists
+
+
+def get_subscribed_chats() -> list[int]:
+    """Get all subscribed chat IDs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM subscriptions")
+    chat_ids = [row["chat_id"] for row in cursor.fetchall()]
+    conn.close()
+    return chat_ids
 
 
 # Initialize the database on import

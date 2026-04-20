@@ -166,6 +166,74 @@ async def handle_mtgastore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def send_deal_to_chat(bot, chat_id: int, deal: dict):
+    """
+    Send a deal (image + table) to a specific chat.
+    Used by both the !MTGAStore command and auto-notifications.
+    """
+    message_text = format_table_text(deal)
+    image_sent = False
+    image_path = deal.get("image_path")
+
+    if image_path and os.path.exists(image_path):
+        try:
+            with open(image_path, "rb") as photo:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=message_text,
+                    parse_mode="HTML",
+                )
+                image_sent = True
+        except Exception as e:
+            logger.error(f"Failed to send image to {chat_id}: {e}")
+
+    if not image_sent:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+
+async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle !MTGAStoreSubscribe — subscribe this chat to auto-notifications."""
+    if not update.message:
+        return
+
+    chat_id = update.message.chat_id
+    is_new = database.subscribe_chat(chat_id)
+
+    if is_new:
+        await update.message.reply_text(
+            "✅ Subscribed! This chat will automatically receive new daily deals "
+            "as they are scraped."
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ This chat is already subscribed."
+        )
+
+
+async def handle_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle !MTGAStoreUnsubscribe — unsubscribe this chat from auto-notifications."""
+    if not update.message:
+        return
+
+    chat_id = update.message.chat_id
+    was_subscribed = database.unsubscribe_chat(chat_id)
+
+    if was_subscribed:
+        await update.message.reply_text(
+            "🔕 Unsubscribed. This chat will no longer receive automatic deal updates."
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ This chat was not subscribed."
+        )
+
+
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start and /help commands."""
     help_text = (
@@ -174,6 +242,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Commands:</b>\n"
         "• <code>!MTGAStore</code> — Show today's daily deal\n"
         "• <code>!MTGAStore YYYYMMDD</code> — Show a specific day's deal\n"
+        "• <code>!MTGAStoreSubscribe</code> — Auto-receive new deals in this chat\n"
+        "• <code>!MTGAStoreUnsubscribe</code> — Stop auto-receiving deals\n"
         "• <code>/help</code> — Show this message\n\n"
         "Data is scraped from r/MagicArena posts by HamBoneRaces.\n"
         f"Auto-scraping runs every {SCRAPE_INTERVAL_HOURS} hours."
@@ -182,11 +252,28 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
-    """Background job that runs the scraper periodically."""
+    """Background job that runs the scraper periodically. Notifies subscribers on new deals."""
     logger.info("Running scheduled scrape...")
     try:
+        # Remember what the latest deal was before scraping
+        old_latest = database.get_latest_deal()
+        old_date_key = old_latest["date_key"] if old_latest else None
+
         count = scraper.scrape_daily_deals()
         logger.info(f"Scheduled scrape complete. {count} new deals found.")
+
+        # If new deals were found, notify subscribers with the latest one
+        if count > 0:
+            new_latest = database.get_latest_deal()
+            if new_latest and new_latest["date_key"] != old_date_key:
+                subscribed_chats = database.get_subscribed_chats()
+                if subscribed_chats:
+                    logger.info(f"Notifying {len(subscribed_chats)} subscribed chats...")
+                    for chat_id in subscribed_chats:
+                        try:
+                            await send_deal_to_chat(context.bot, chat_id, new_latest)
+                        except Exception as e:
+                            logger.error(f"Failed to notify chat {chat_id}: {e}")
     except Exception as e:
         logger.error(f"Scheduled scrape failed: {e}", exc_info=True)
 
@@ -213,9 +300,19 @@ def main():
 
     # Register handlers
 
+    # Subscribe/Unsubscribe (must be registered BEFORE the generic !MTGAStore handler)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"(?i)^!MTGAStoreSubscribe"),
+        handle_subscribe,
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"(?i)^!MTGAStoreUnsubscribe"),
+        handle_unsubscribe,
+    ))
+
     # !MTGAStore command (detected via message text, not /command)
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"(?i)^!MTGAStore"),
+        filters.TEXT & filters.Regex(r"(?i)^!MTGAStore(?!Subscribe|Unsubscribe)"),
         handle_mtgastore,
     ))
 
