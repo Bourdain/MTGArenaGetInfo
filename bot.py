@@ -6,7 +6,7 @@ Runs a background scraper on a configurable interval.
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -20,6 +20,7 @@ from telegram.ext import (
 
 import database
 import scraper
+import events_scraper
 
 # Load environment variables
 load_dotenv()
@@ -237,6 +238,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Commands:</b>\n"
         "• <code>/MTGAStore</code> — Show today's daily deal\n"
         "• <code>/MTGAStore YYYYMMDD</code> — Show a specific day's deal\n"
+        "• <code>/MTGAEvents</code> — Show current ranked events schedule\n"
         "• <code>/MTGAStoreSubscribe</code> — Auto-receive new deals in this chat\n"
         "• <code>/MTGAStoreUnsubscribe</code> — Stop auto-receiving deals\n"
         "• <code>/help</code> — Show this message\n\n"
@@ -244,6 +246,78 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Auto-scraping runs every {SCRAPE_INTERVAL_HOURS} hours."
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
+
+
+async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /mtgaevents command — show current ranked events with status colors."""
+    if not update.message:
+        return
+
+    latest = database.get_latest_events()
+    if not latest or not latest.get("events_data"):
+        await update.message.reply_text(
+            "❌ No events data available yet. The scraper may not have run."
+        )
+        return
+
+    events = latest["events_data"]
+    today = date.today()
+    scrape_date = latest.get("date_key", "")
+
+    # Telegram has a 4096 char message limit, so we may need to split
+    # Build the message with status-based formatting
+    lines = [
+        "🏆 <b>MTGA Ranked Events</b>",
+        f"📆 Data from: {scrape_date[:4]}-{scrape_date[4:6]}-{scrape_date[6:]}",
+        "",
+        "🟢 = Active  |  ⚪ = Upcoming  |  🔴 = Ended  |  ♾️ = Permanent",
+        "",
+    ]
+
+    for ev in events:
+        status = events_scraper.get_event_status(ev["start"], ev["end"], today)
+        event_name = ev["event"]
+        fmt = ev["format"]
+        start = ev["start"]
+        end = ev["end"]
+
+        # Format the date range
+        date_range = f"{start} → {end}"
+
+        if status == "permanent":
+            # Permanent events — plain text with infinity symbol
+            line = f"♾️ {event_name}\n    <i>{fmt}</i>"
+        elif status == "ended":
+            # Ended — strikethrough
+            line = f"🔴 <s>{event_name}</s>\n    <i>{fmt}</i> | {date_range}"
+        elif status == "active":
+            # Active — bold + green indicator
+            line = f"🟢 <b>{event_name}</b>\n    <i>{fmt}</i> | {date_range}"
+        else:  # upcoming
+            line = f"⚪ {event_name}\n    <i>{fmt}</i> | {date_range}"
+
+        lines.append(line)
+
+    message = "\n".join(lines)
+
+    # Telegram limit is 4096 chars — split if needed
+    if len(message) <= 4096:
+        await update.message.reply_text(message, parse_mode="HTML")
+    else:
+        # Split into chunks at line boundaries
+        chunks = []
+        current = ""
+        for line in lines:
+            if len(current) + len(line) + 1 > 4000:
+                chunks.append(current)
+                current = line
+            else:
+                current = current + "\n" + line if current else line
+        if current:
+            chunks.append(current)
+
+        for chunk in chunks:
+            await update.message.reply_text(chunk, parse_mode="HTML")
 
 
 async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
@@ -273,6 +347,16 @@ async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Scheduled scrape failed: {e}", exc_info=True)
 
 
+async def scheduled_events_scrape(context: ContextTypes.DEFAULT_TYPE):
+    """Background job that scrapes the ranked events page daily."""
+    logger.info("Running scheduled events scrape...")
+    try:
+        count = events_scraper.scrape_events()
+        logger.info(f"Scheduled events scrape complete. {count} events found.")
+    except Exception as e:
+        logger.error(f"Scheduled events scrape failed: {e}", exc_info=True)
+
+
 def main():
     """Start the Telegram bot with background scraping."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
@@ -282,13 +366,19 @@ def main():
 
     logger.info("Starting MTGA Daily Deals Bot...")
 
-    # Run an initial scrape before starting
-    logger.info("Running initial scrape...")
+    # Run initial scrapes before starting
+    logger.info("Running initial scrapes...")
     try:
         count = scraper.scrape_daily_deals()
-        logger.info(f"Initial scrape complete. {count} new deals found.")
+        logger.info(f"Initial deal scrape complete. {count} new deals found.")
     except Exception as e:
-        logger.error(f"Initial scrape failed: {e}", exc_info=True)
+        logger.error(f"Initial deal scrape failed: {e}", exc_info=True)
+
+    try:
+        ev_count = events_scraper.scrape_events()
+        logger.info(f"Initial events scrape complete. {ev_count} events found.")
+    except Exception as e:
+        logger.error(f"Initial events scrape failed: {e}", exc_info=True)
 
     # Build the Telegram bot application
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -301,6 +391,9 @@ def main():
 
     # /MTGAStore command
     app.add_handler(CommandHandler("mtgastore", handle_mtgastore))
+
+    # /MTGAEvents command
+    app.add_handler(CommandHandler("mtgaevents", handle_mtgaevents))
 
     # Standard /help and /start commands
     app.add_handler(CommandHandler("start", handle_help))
@@ -316,7 +409,16 @@ def main():
             first=SCRAPE_INTERVAL_HOURS * 3600,  # First run after interval
             name="scrape_daily_deals",
         )
-        logger.info(f"Scheduled scraping every {SCRAPE_INTERVAL_HOURS} hours")
+        logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_HOURS} hours")
+
+        # Scrape events once per day (every 24 hours)
+        job_queue.run_repeating(
+            scheduled_events_scrape,
+            interval=86400,       # every 24 hours
+            first=86400,          # first run after 24 hours
+            name="scrape_events",
+        )
+        logger.info("Scheduled events scraping every 24 hours")
     else:
         logger.warning("Job queue not available — scheduled scraping disabled")
 

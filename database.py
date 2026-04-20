@@ -1,6 +1,6 @@
 """
-SQLite database operations for MTGA Daily Deals.
-Stores scraped daily deal data with date-keyed lookups.
+SQLite database operations for MTGA Daily Deals and Ranked Events.
+Stores scraped daily deal data and events with date-keyed lookups.
 """
 
 import sqlite3
@@ -38,6 +38,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subscriptions (
             chat_id INTEGER PRIMARY KEY,
             subscribed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ranked_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_key TEXT UNIQUE NOT NULL,
+            events_data TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -170,6 +178,44 @@ def get_subscribed_chats() -> list[int]:
     chat_ids = [row["chat_id"] for row in cursor.fetchall()]
     conn.close()
     return chat_ids
+
+
+# --- Ranked Events ---
+
+def save_events(date_key: str, events_data: list) -> bool:
+    """Save ranked events data for a given date."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO ranked_events (date_key, events_data)
+            VALUES (?, ?)
+        """, (date_key, json.dumps(events_data)))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_latest_events() -> dict | None:
+    """Get the most recently scraped events data."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM ranked_events
+        ORDER BY date_key DESC
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        d = dict(row)
+        try:
+            d["events_data"] = json.loads(d["events_data"])
+        except (json.JSONDecodeError, TypeError):
+            d["events_data"] = None
+        return d
+    return None
 
 
 # Initialize the database on import
