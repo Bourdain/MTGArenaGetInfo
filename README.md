@@ -41,8 +41,8 @@ The bot will:
 
 | Command | Description |
 |---|---|
-| `!MTGAStore` | Shows the most recent daily deal |
-| `!MTGAStore YYYYMMDD` | Shows the deal for a specific date (e.g., `!MTGAStore 20260420`) |
+| `/MTGAStore` | Shows the most recent daily deal |
+| `/MTGAStore YYYYMMDD` | Shows the deal for a specific date (e.g., `/MTGAStore 20260420`) |
 | `/help` | Shows help message |
 
 ## Testing the scraper standalone
