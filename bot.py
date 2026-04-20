@@ -100,27 +100,22 @@ def format_table_text(deal: dict) -> str:
 
 async def handle_mtgastore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handle the !MTGAStore command.
-    - !MTGAStore → latest deal
-    - !MTGAStore YYYYMMDD → specific date
+    Handle the /MTGAStore command.
+    - /MTGAStore → latest deal
+    - /MTGAStore YYYYMMDD → specific date
     """
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
-    text = update.message.text.strip()
-
-    # Parse command and optional date argument
-    parts = text.split()
-    date_arg = None
-    if len(parts) >= 2:
-        date_arg = parts[1].strip()
+    # context.args contains everything after the command
+    date_arg = context.args[0].strip() if context.args else None
 
     # Fetch the deal
     if date_arg:
         # Validate YYYYMMDD format
         if len(date_arg) != 8 or not date_arg.isdigit():
             await update.message.reply_text(
-                "❌ Invalid date format. Use YYYYMMDD (e.g., !MTGAStore 20260420)"
+                "❌ Invalid date format. Use YYYYMMDD (e.g., /MTGAStore 20260420)"
             )
             return
         deal = database.get_deal_by_date(date_arg)
@@ -198,7 +193,7 @@ async def send_deal_to_chat(bot, chat_id: int, deal: dict):
 
 
 async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle !MTGAStoreSubscribe — subscribe this chat to auto-notifications."""
+    """Handle /MTGAStoreSubscribe — subscribe this chat to auto-notifications."""
     if not update.message:
         return
 
@@ -217,7 +212,7 @@ async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle !MTGAStoreUnsubscribe — unsubscribe this chat from auto-notifications."""
+    """Handle /MTGAStoreUnsubscribe — unsubscribe this chat from auto-notifications."""
     if not update.message:
         return
 
@@ -240,10 +235,10 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🃏 <b>MTGA Daily Deals Bot</b>\n\n"
         "I track Magic: The Gathering Arena daily deals from Reddit!\n\n"
         "<b>Commands:</b>\n"
-        "• <code>!MTGAStore</code> — Show today's daily deal\n"
-        "• <code>!MTGAStore YYYYMMDD</code> — Show a specific day's deal\n"
-        "• <code>!MTGAStoreSubscribe</code> — Auto-receive new deals in this chat\n"
-        "• <code>!MTGAStoreUnsubscribe</code> — Stop auto-receiving deals\n"
+        "• <code>/MTGAStore</code> — Show today's daily deal\n"
+        "• <code>/MTGAStore YYYYMMDD</code> — Show a specific day's deal\n"
+        "• <code>/MTGAStoreSubscribe</code> — Auto-receive new deals in this chat\n"
+        "• <code>/MTGAStoreUnsubscribe</code> — Stop auto-receiving deals\n"
         "• <code>/help</code> — Show this message\n\n"
         "Data is scraped from r/MagicArena posts by HamBoneRaces.\n"
         f"Auto-scraping runs every {SCRAPE_INTERVAL_HOURS} hours."
@@ -300,21 +295,12 @@ def main():
 
     # Register handlers
 
-    # Subscribe/Unsubscribe (must be registered BEFORE the generic !MTGAStore handler)
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"(?i)^!MTGAStoreSubscribe"),
-        handle_subscribe,
-    ))
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"(?i)^!MTGAStoreUnsubscribe"),
-        handle_unsubscribe,
-    ))
+    # Subscribe/Unsubscribe (registered before MTGAStore so they match first)
+    app.add_handler(CommandHandler("mtgastoresubscribe", handle_subscribe))
+    app.add_handler(CommandHandler("mtgastoreunsubscribe", handle_unsubscribe))
 
-    # !MTGAStore command (detected via message text, not /command)
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"(?i)^!MTGAStore(?!Subscribe|Unsubscribe)"),
-        handle_mtgastore,
-    ))
+    # /MTGAStore command
+    app.add_handler(CommandHandler("mtgastore", handle_mtgastore))
 
     # Standard /help and /start commands
     app.add_handler(CommandHandler("start", handle_help))
