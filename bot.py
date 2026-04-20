@@ -248,6 +248,18 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode="HTML")
 
 
+def _fmt_date(d: str) -> str:
+    """Convert M/D/YYYY to YYYY-MM-DD. Passes through ∞ unchanged."""
+    d = d.strip()
+    if not d or d == "∞":
+        return d
+    try:
+        parsed = datetime.strptime(d, "%m/%d/%Y")
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        return d
+
+
 async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /mtgaevents command — show current ranked events with status colors."""
     if not update.message:
@@ -264,30 +276,25 @@ async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = date.today()
     scrape_date = latest.get("date_key", "")
 
-    # Categorize events into groups
+    # Categorize limited-time events only (skip permanent ∞/∞ events)
     groups = {
-        "🎮 Constructed Ranked": [],
-        "⭐ Premier Draft": [],
-        "✌️ Pick-Two Draft": [],
-        "⚡ Quick Draft": [],
-        "🎲 Other Events": [],
+        "🎭 Player Draft": [],
+        "🤖 Bot Draft": [],
     }
 
     for ev in events:
         status = events_scraper.get_event_status(ev["start"], ev["end"], today)
         ev["_status"] = status
-        name = ev["event"]
 
-        if "Premier Draft" in name:
-            groups["⭐ Premier Draft"].append(ev)
-        elif "Pick-Two" in name:
-            groups["✌️ Pick-Two Draft"].append(ev)
-        elif "Quick Draft" in name:
-            groups["⚡ Quick Draft"].append(ev)
-        elif ev["start"] == "∞" and ev["end"] == "∞":
-            groups["🎮 Constructed Ranked"].append(ev)
+        # Skip permanent events
+        if status == "permanent":
+            continue
+
+        fmt = ev["format"]
+        if "Bot Draft" in fmt:
+            groups["🤖 Bot Draft"].append(ev)
         else:
-            groups["🎲 Other Events"].append(ev)
+            groups["🎭 Player Draft"].append(ev)
 
     # Build message
     formatted_date = f"{scrape_date[:4]}-{scrape_date[4:6]}-{scrape_date[6:]}" if len(scrape_date) == 8 else scrape_date
@@ -295,7 +302,7 @@ async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 <b>MTGA Ranked Events</b>",
         f"📆 Updated: {formatted_date}",
         "",
-        "🟢 Active  •  ⚪ Upcoming  •  🔴 Ended  •  ♾️ Always",
+        "🟢 Active  •  ⚪ Upcoming  •  🔴 Ended",
     ]
 
     for group_name, group_events in groups.items():
@@ -310,22 +317,18 @@ async def handle_mtgaevents(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for ev in group_events:
             status = ev["_status"]
             name = ev["event"]
-            fmt = ev["format"]
-            start = ev["start"]
-            end = ev["end"]
+            start = _fmt_date(ev["start"])
+            end = _fmt_date(ev["end"])
 
-            if status == "permanent":
-                lines.append(f"  ♾️ {name}")
-                lines.append(f"      <i>{fmt}</i>")
-            elif status == "ended":
+            if status == "ended":
                 lines.append(f"  🔴 <s>{name}</s>")
-                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+                lines.append(f"      📅 {start} → {end}")
             elif status == "active":
                 lines.append(f"  🟢 <b>{name}</b>")
-                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+                lines.append(f"      📅 {start} → {end}")
             else:  # upcoming
                 lines.append(f"  ⚪ {name}")
-                lines.append(f"      <i>{fmt}</i>  📅 {start} → {end}")
+                lines.append(f"      📅 {start} → {end}")
 
     lines.append("")
     lines.append("🔗 <a href=\"https://magic.wizards.com/en/news/mtg-arena/ranked-season\">Full details on Wizards</a>")
