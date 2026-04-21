@@ -416,14 +416,8 @@ def main():
 
     logger.info("Starting MTGA Daily Deals Bot...")
 
-    # Run initial scrapes before starting
-    logger.info("Running initial scrapes...")
-    try:
-        count = scraper.scrape_daily_deals()
-        logger.info(f"Initial deal scrape complete. {count} new deals found.")
-    except Exception as e:
-        logger.error(f"Initial deal scrape failed: {e}", exc_info=True)
-
+    # Run initial events scrape (no notifications needed for events)
+    logger.info("Running initial events scrape...")
     try:
         ev_count = events_scraper.scrape_events()
         logger.info(f"Initial events scrape complete. {ev_count} events found.")
@@ -452,14 +446,15 @@ def main():
     # Schedule background scraping
     job_queue = app.job_queue
     if job_queue:
-        # Run every SCRAPE_INTERVAL_MINUTES minutes
+        # Run every SCRAPE_INTERVAL_MINUTES minutes, first run 10s after startup
+        # so it goes through scheduled_scrape which has notification logic
         job_queue.run_repeating(
             scheduled_scrape,
             interval=SCRAPE_INTERVAL_MINUTES * 60,
-            first=SCRAPE_INTERVAL_MINUTES * 60,  # First run after interval
+            first=10,  # First run 10s after start (to allow bot to initialize)
             name="scrape_daily_deals",
         )
-        logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_MINUTES} minutes")
+        logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_MINUTES} minutes (first run in 10s)")
 
         # Scrape events once per day (every 24 hours)
         job_queue.run_repeating(
