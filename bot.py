@@ -26,7 +26,7 @@ import events_scraper
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-SCRAPE_INTERVAL_HOURS = int(os.getenv("SCRAPE_INTERVAL_HOURS", "6"))
+SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "30"))
 
 # Configure logging
 logging.basicConfig(
@@ -243,7 +243,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/MTGAStoreUnsubscribe</code> — Stop auto-receiving deals\n"
         "• <code>/help</code> — Show this message\n\n"
         "Data is scraped from r/MagicArena posts by HamBoneRaces.\n"
-        f"Auto-scraping runs every {SCRAPE_INTERVAL_HOURS} hours."
+        f"Auto-scraping runs every {SCRAPE_INTERVAL_MINUTES} minutes."
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -437,14 +437,14 @@ def main():
     # Schedule background scraping
     job_queue = app.job_queue
     if job_queue:
-        # Run every SCRAPE_INTERVAL_HOURS hours
+        # Run every SCRAPE_INTERVAL_MINUTES minutes
         job_queue.run_repeating(
             scheduled_scrape,
-            interval=SCRAPE_INTERVAL_HOURS * 3600,
-            first=SCRAPE_INTERVAL_HOURS * 3600,  # First run after interval
+            interval=SCRAPE_INTERVAL_MINUTES * 60,
+            first=SCRAPE_INTERVAL_MINUTES * 60,  # First run after interval
             name="scrape_daily_deals",
         )
-        logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_HOURS} hours")
+        logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_MINUTES} minutes")
 
         # Scrape events once per day (every 24 hours)
         job_queue.run_repeating(
