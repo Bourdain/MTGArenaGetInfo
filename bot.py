@@ -6,6 +6,7 @@ Runs a background scraper on a configurable interval.
 
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, date
 
 from dotenv import load_dotenv
@@ -28,11 +29,25 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "30"))
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# Configure logging — write to both console and a rotating log file
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.log")
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+root_logger.addHandler(console_handler)
+
+# File handler (5 MB per file, keep 3 backups)
+file_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 

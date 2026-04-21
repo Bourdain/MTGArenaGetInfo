@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 daily_deals.db
+bot.log*
 images/
 .vs/
 *.egg-info/
