@@ -5,6 +5,7 @@ Runs a background scraper on a configurable interval.
 """
 
 import os
+import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, date
@@ -385,14 +386,27 @@ async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
         if count > 0:
             new_latest = database.get_latest_deal()
             if new_latest and new_latest["date_key"] != old_date_key:
+                # Wait for the image file to be fully written to disk
+                image_path = new_latest.get("image_path")
+                if image_path:
+                    for attempt in range(10):
+                        if os.path.exists(image_path) and os.path.getsize(image_path) > 0:
+                            logger.info(f"Image ready: {image_path}")
+                            break
+                        logger.info(f"Waiting for image file (attempt {attempt + 1}/10): {image_path}")
+                        await asyncio.sleep(1)
+                    else:
+                        logger.warning(f"Image file not found after waiting: {image_path}")
+
                 subscribed_chats = database.get_subscribed_chats()
-                if subscribed_chats:
-                    logger.info(f"Notifying {len(subscribed_chats)} subscribed chats...")
-                    for chat_id in subscribed_chats:
-                        try:
-                            await send_deal_to_chat(context.bot, chat_id, new_latest)
-                        except Exception as e:
-                            logger.error(f"Failed to notify chat {chat_id}: {e}")
+                logger.info(f"Found {len(subscribed_chats)} subscribed chats: {subscribed_chats}")
+                for chat_id in subscribed_chats:
+                    try:
+                        logger.info(f"Sending deal to chat {chat_id}...")
+                        await send_deal_to_chat(context.bot, chat_id, new_latest)
+                        logger.info(f"Successfully sent deal to chat {chat_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to notify chat {chat_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Scheduled scrape failed: {e}", exc_info=True)
 
