@@ -48,6 +48,21 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            deal_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_attempted_at TEXT,
+            error_message TEXT,
+            FOREIGN KEY (chat_id) REFERENCES subscriptions(chat_id),
+            FOREIGN KEY (deal_id) REFERENCES daily_deals(id),
+            UNIQUE(chat_id, deal_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -107,6 +122,18 @@ def get_latest_deal() -> dict | None:
         ORDER BY date_key DESC
         LIMIT 1
     """)
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return _row_to_dict(row)
+    return None
+
+
+def get_deal_by_id(deal_id: int) -> dict | None:
+    """Get a daily deal by its primary key ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM daily_deals WHERE id = ?", (deal_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -178,6 +205,94 @@ def get_subscribed_chats() -> list[int]:
     chat_ids = [row["chat_id"] for row in cursor.fetchall()]
     conn.close()
     return chat_ids
+
+
+# --- Pending Messages Queue ---
+
+def enqueue_deal_notifications(deal_id: int) -> int:
+    """
+    Create a pending message for every subscribed chat for the given deal.
+    Uses INSERT OR IGNORE to avoid duplicates (UNIQUE chat_id + deal_id).
+    Returns the number of messages enqueued.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    chat_ids = get_subscribed_chats()
+    enqueued = 0
+    for chat_id in chat_ids:
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO pending_messages (chat_id, deal_id)
+                VALUES (?, ?)
+            """, (chat_id, deal_id))
+            enqueued += cursor.rowcount
+        except sqlite3.IntegrityError:
+            pass
+    conn.commit()
+    conn.close()
+    return enqueued
+
+
+def get_pending_messages(limit: int = 50) -> list[dict]:
+    """
+    Fetch pending messages that are eligible for dispatch.
+    Returns messages with status 'pending' and retry_count < 3,
+    joined with deal data, ordered by creation time.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            pm.id AS message_id,
+            pm.chat_id,
+            pm.deal_id,
+            pm.retry_count,
+            pm.status
+        FROM pending_messages pm
+        WHERE pm.status = 'pending' AND pm.retry_count < 3
+        ORDER BY pm.created_at ASC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def mark_message_sent(message_id: int):
+    """Mark a pending message as successfully sent."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE pending_messages
+        SET status = 'sent', last_attempted_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (message_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_message_failed(message_id: int, error: str):
+    """
+    Record a failed send attempt. Increments retry_count and stores the error.
+    If retry_count reaches 3, status is set to 'failed' permanently.
+    Otherwise status stays 'pending' for the next dispatch cycle.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Increment retry count and decide new status
+    cursor.execute("SELECT retry_count FROM pending_messages WHERE id = ?", (message_id,))
+    row = cursor.fetchone()
+    if row:
+        new_count = row["retry_count"] + 1
+        new_status = 'failed' if new_count >= 3 else 'pending'
+        cursor.execute("""
+            UPDATE pending_messages
+            SET retry_count = ?, status = ?, last_attempted_at = CURRENT_TIMESTAMP,
+                error_message = ?
+            WHERE id = ?
+        """, (new_count, new_status, error, message_id))
+    conn.commit()
+    conn.close()
 
 
 # --- Ranked Events ---

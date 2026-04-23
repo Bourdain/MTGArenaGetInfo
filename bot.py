@@ -29,6 +29,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "30"))
+PENDING_MSG_INTERVAL_MINUTES = int(os.getenv("PENDING_MSG_INTERVAL_MINUTES", "2"))
 
 # Configure logging — write to both console and a rotating log file
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -384,33 +385,71 @@ async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
         count = scraper.scrape_daily_deals()
         logger.info(f"Scheduled scrape complete. {count} new deals found.")
 
-        # If new deals were found, notify subscribers with the latest one
+        # If new deals were found, enqueue notifications for subscribers
         if count > 0:
             new_latest = database.get_latest_deal()
             if new_latest and new_latest["date_key"] != old_date_key:
-                # Wait for the image file to be fully written to disk
-                image_path = new_latest.get("image_path")
-                if image_path:
-                    for attempt in range(10):
-                        if os.path.exists(image_path) and os.path.getsize(image_path) > 0:
-                            logger.info(f"Image ready: {image_path}")
-                            break
-                        logger.info(f"Waiting for image file (attempt {attempt + 1}/10): {image_path}")
-                        await asyncio.sleep(1)
-                    else:
-                        logger.warning(f"Image file not found after waiting: {image_path}")
-
-                subscribed_chats = database.get_subscribed_chats()
-                logger.info(f"Found {len(subscribed_chats)} subscribed chats: {subscribed_chats}")
-                for chat_id in subscribed_chats:
-                    try:
-                        logger.info(f"Sending deal to chat {chat_id}...")
-                        await send_deal_to_chat(context.bot, chat_id, new_latest)
-                        logger.info(f"Successfully sent deal to chat {chat_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to notify chat {chat_id}: {e}", exc_info=True)
+                deal_id = new_latest["id"]
+                enqueued = database.enqueue_deal_notifications(deal_id)
+                logger.info(
+                    f"Enqueued {enqueued} pending messages for deal {deal_id} "
+                    f"(date_key={new_latest['date_key']})"
+                )
     except Exception as e:
         logger.error(f"Scheduled scrape failed: {e}", exc_info=True)
+
+
+async def process_pending_messages(context: ContextTypes.DEFAULT_TYPE):
+    """Background job that dispatches pending messages with retry logic."""
+    pending = database.get_pending_messages()
+    if not pending:
+        return
+
+    logger.info(f"Processing {len(pending)} pending message(s)...")
+
+    for msg in pending:
+        message_id = msg["message_id"]
+        chat_id = msg["chat_id"]
+        deal_id = msg["deal_id"]
+        retry_count = msg["retry_count"]
+
+        # Fetch the deal data
+        deal = database.get_deal_by_id(deal_id)
+        if not deal:
+            logger.error(f"Pending message {message_id}: deal {deal_id} not found, marking failed")
+            database.mark_message_failed(message_id, "Deal not found in database")
+            continue
+
+        # Wait for image readiness if this is the first attempt
+        if retry_count == 0:
+            image_path = deal.get("image_path")
+            if image_path:
+                for attempt in range(10):
+                    if os.path.exists(image_path) and os.path.getsize(image_path) > 0:
+                        break
+                    logger.info(
+                        f"Waiting for image file (attempt {attempt + 1}/10): {image_path}"
+                    )
+                    await asyncio.sleep(1)
+
+        try:
+            logger.info(
+                f"Sending deal {deal_id} to chat {chat_id} "
+                f"(attempt {retry_count + 1}/3, msg_id={message_id})"
+            )
+            await send_deal_to_chat(context.bot, chat_id, deal)
+            database.mark_message_sent(message_id)
+            logger.info(f"Successfully sent message {message_id} to chat {chat_id}")
+        except Exception as e:
+            logger.error(
+                f"Failed to send message {message_id} to chat {chat_id} "
+                f"(attempt {retry_count + 1}/3): {e}",
+                exc_info=True,
+            )
+            database.mark_message_failed(message_id, str(e))
+
+        # Small delay between sends to respect Telegram rate limits
+        await asyncio.sleep(0.5)
 
 
 async def scheduled_events_scrape(context: ContextTypes.DEFAULT_TYPE):
@@ -471,6 +510,18 @@ def main():
             name="scrape_daily_deals",
         )
         logger.info(f"Scheduled deal scraping every {SCRAPE_INTERVAL_MINUTES} minutes (first run in 10s)")
+
+        # Process pending message queue every PENDING_MSG_INTERVAL_MINUTES
+        job_queue.run_repeating(
+            process_pending_messages,
+            interval=PENDING_MSG_INTERVAL_MINUTES * 60,
+            first=30,  # 30s after start — gives scraper time to populate
+            name="process_pending_messages",
+        )
+        logger.info(
+            f"Scheduled pending message dispatch every {PENDING_MSG_INTERVAL_MINUTES} minutes "
+            f"(first run in 30s)"
+        )
 
         # Scrape events once per day (every 24 hours)
         job_queue.run_repeating(
