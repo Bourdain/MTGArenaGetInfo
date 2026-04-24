@@ -196,8 +196,9 @@ async def send_deal_to_chat(bot, chat_id: int, deal: dict):
                     photo=photo,
                     caption=message_text,
                     parse_mode="HTML",
-                    read_timeout=30,
-                    write_timeout=30,
+                    connect_timeout=30,
+                    read_timeout=60,
+                    write_timeout=60,
                 )
                 image_sent = True
         except Exception as e:
