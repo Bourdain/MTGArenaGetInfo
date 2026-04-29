@@ -152,31 +152,7 @@ async def handle_mtgastore(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Format the message
-    message_text = format_table_text(deal)
-
-    # Try to send the image
-    image_sent = False
-    image_path = deal.get("image_path")
-    if image_path and os.path.exists(image_path):
-        try:
-            with open(image_path, "rb") as photo:
-                await update.message.reply_photo(
-                    photo=photo,
-                    caption=message_text,
-                    parse_mode="HTML",
-                )
-                image_sent = True
-        except Exception as e:
-            logger.error(f"Failed to send image: {e}")
-
-    # If image failed or doesn't exist, send text only
-    if not image_sent:
-        await update.message.reply_text(
-            message_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+    await send_deal_to_chat(context.bot, update.message.chat_id, deal)
 
 
 async def send_deal_to_chat(bot, chat_id: int, deal: dict):
@@ -185,10 +161,21 @@ async def send_deal_to_chat(bot, chat_id: int, deal: dict):
     Used by both the !MTGAStore command and auto-notifications.
     """
     message_text = format_table_text(deal)
-    image_sent = False
-    image_path = deal.get("image_path")
 
-    if image_path and os.path.exists(image_path):
+    # Trim to 4096 characters to fit Telegram's max message limit
+    if len(message_text) > 4096:
+        message_text = message_text[:4096]
+        # Ensure <pre> tag is closed if it was cut off
+        if "<pre>" in message_text and "</pre>" not in message_text:
+            message_text = message_text[:4090] + "</pre>"
+
+    text_length = len(message_text)
+    image_path = deal.get("image_path")
+    has_image = bool(image_path and os.path.exists(image_path))
+
+    if has_image and text_length <= 1024:
+        # Send as single message: Image with caption
+        image_sent = False
         try:
             with open(image_path, "rb") as photo:
                 await bot.send_photo(
@@ -200,17 +187,48 @@ async def send_deal_to_chat(bot, chat_id: int, deal: dict):
                     read_timeout=60,
                     write_timeout=60,
                 )
-                image_sent = True
+            image_sent = True
         except Exception as e:
             logger.error(f"Failed to send image to {chat_id}: {e}")
 
-    if not image_sent:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+        if not image_sent:
+            # Fallback to sending text if image upload failed
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send fallback text to {chat_id}: {e}")
+
+    else:
+        # Either no image, or text > 1024.
+        # If we have an image and text > 1024, send image first (no caption), then text.
+        if has_image:
+            try:
+                with open(image_path, "rb") as photo:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        connect_timeout=30,
+                        read_timeout=60,
+                        write_timeout=60,
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send image to {chat_id}: {e}")
+
+        # Send the text separately
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send text to {chat_id}: {e}")
 
 
 async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
