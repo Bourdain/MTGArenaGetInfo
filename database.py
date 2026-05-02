@@ -295,6 +295,57 @@ def mark_message_failed(message_id: int, error: str):
     conn.close()
 
 
+# --- Backfill Incomplete Deals ---
+
+def get_incomplete_deals(limit: int = 5) -> list[dict]:
+    """
+    Get the latest N deals that are missing either image_path or table_data.
+    Returns a list of deal dicts ordered by date_key descending.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM daily_deals
+        WHERE image_path IS NULL OR table_data IS NULL
+        ORDER BY date_key DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [_row_to_dict(row) for row in rows]
+
+
+def update_deal(deal_id: int, image_path: str | None = None,
+                table_data: list | None = None) -> bool:
+    """
+    Update image_path and/or table_data on an existing deal.
+    Only non-None arguments are written. Returns True if the row was updated.
+    """
+    updates = []
+    params = []
+    if image_path is not None:
+        updates.append("image_path = ?")
+        params.append(image_path)
+    if table_data is not None:
+        updates.append("table_data = ?")
+        params.append(json.dumps(table_data))
+
+    if not updates:
+        return False
+
+    params.append(deal_id)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"UPDATE daily_deals SET {', '.join(updates)} WHERE id = ?",
+        params,
+    )
+    conn.commit()
+    changed = cursor.rowcount > 0
+    conn.close()
+    return changed
+
+
 # --- Ranked Events ---
 
 def save_events(date_key: str, events_data: list) -> bool:

@@ -298,6 +298,92 @@ def scrape_daily_deals() -> int:
     return new_deals
 
 
+def backfill_incomplete_deals() -> int:
+    """
+    Check the latest 5 deals for missing image or table data.
+    Re-fetches the Reddit thread to fill in gaps.
+    Returns the number of deals updated.
+    """
+    incomplete = database.get_incomplete_deals(limit=5)
+    if not incomplete:
+        logger.info("Backfill: all recent deals are complete.")
+        return 0
+
+    logger.info(f"Backfill: found {len(incomplete)} incomplete deal(s)")
+    updated = 0
+
+    for deal in incomplete:
+        deal_id = deal["id"]
+        date_key = deal["date_key"]
+        post_id = deal["reddit_post_id"]
+        title = deal["title"]
+        missing_image = not deal.get("image_path")
+        missing_table = not deal.get("table_data")
+
+        logger.info(
+            f"Backfill: checking {title} (id={deal_id})"
+            f" — missing_image={missing_image}, missing_table={missing_table}"
+        )
+
+        new_image_path = None
+        new_table_data = None
+
+        # Re-fetch the Reddit thread to get missing data
+        comments_url = COMMENTS_URL.format(post_id=post_id)
+        comments_json = fetch_json(comments_url)
+        if not comments_json or len(comments_json) < 1:
+            logger.warning(f"Backfill: could not fetch thread for post {post_id}")
+            continue
+
+        # --- Backfill image ---
+        if missing_image:
+            # The post data is in the first listing
+            post_listing = comments_json[0]
+            post_children = post_listing.get("data", {}).get("children", [])
+            if post_children:
+                post_data = post_children[0].get("data", {})
+                image_url = post_data.get("url", "")
+                if image_url and ("i.redd.it" in image_url or "preview.redd.it" in image_url):
+                    new_image_path = download_image(image_url, date_key)
+                    if new_image_path:
+                        logger.info(f"Backfill: downloaded image for {date_key}")
+                    else:
+                        logger.warning(f"Backfill: image download failed for {date_key}")
+                else:
+                    logger.info(f"Backfill: no suitable image URL found for {date_key}")
+
+        # --- Backfill table ---
+        if missing_table:
+            hambone_body = find_hambone_comment(comments_json)
+            if hambone_body:
+                new_table_data = parse_markdown_table(hambone_body)
+                if new_table_data:
+                    logger.info(
+                        f"Backfill: extracted table with {len(new_table_data)} rows"
+                        f" for {date_key}"
+                    )
+                else:
+                    logger.warning(
+                        f"Backfill: found HamBoneRaces comment but couldn't parse"
+                        f" table for {date_key}"
+                    )
+            else:
+                logger.info(f"Backfill: no HamBoneRaces table comment yet for {date_key}")
+
+        # Update the database if we found anything new
+        if new_image_path or new_table_data:
+            database.update_deal(
+                deal_id,
+                image_path=new_image_path,
+                table_data=new_table_data,
+            )
+            updated += 1
+            logger.info(f"Backfill: updated deal {deal_id} ({date_key})")
+
+    logger.info(f"Backfill complete. {updated} deal(s) updated.")
+    return updated
+
+
 # Allow running the scraper standalone for testing
 if __name__ == "__main__":
     import sys

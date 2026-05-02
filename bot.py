@@ -417,6 +417,14 @@ async def scheduled_scrape(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Scheduled scrape failed: {e}", exc_info=True)
 
+    # Backfill any recent deals that are still missing image or table data
+    try:
+        backfilled = scraper.backfill_incomplete_deals()
+        if backfilled:
+            logger.info(f"Backfill updated {backfilled} deal(s)")
+    except Exception as e:
+        logger.error(f"Backfill failed: {e}", exc_info=True)
+
 
 async def process_pending_messages(context: ContextTypes.DEFAULT_TYPE):
     """Background job that dispatches pending messages with retry logic."""
